@@ -15,6 +15,7 @@
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <unistd.h>
 
 time_t start_t;
 
@@ -33,7 +34,7 @@ static int nullfs_isdir(const char *path) {
 };
 
 static int nullfs_getattr(const char *path, struct stat *stbuf) {
-    int res = 0;
+    int res = -ENOENT;
     if (! path) return -ENOENT;
 
     memset(stbuf, 0, sizeof(struct stat));
@@ -43,6 +44,7 @@ static int nullfs_getattr(const char *path, struct stat *stbuf) {
         stbuf->st_atime = time(NULL);
         stbuf->st_mtime = start_t;
         stbuf->st_ctime = start_t;
+        res = 0;
     } else {
         stbuf->st_mode = S_IFREG | 0666;
         stbuf->st_nlink = 1;
@@ -50,8 +52,27 @@ static int nullfs_getattr(const char *path, struct stat *stbuf) {
         stbuf->st_atime = time(NULL);
         stbuf->st_mtime = time(NULL);
         stbuf->st_ctime = time(NULL);
+        
+        char tmp_root[] = "/tmp/fuse-nul1fs";
+        char tmp_path[4096];
+        char tmp_file[4096];
+        
+        snprintf(tmp_path, sizeof tmp_path, "%s/%d", tmp_root, getpid());
+        snprintf(tmp_file, sizeof tmp_file, "%s/%d%s", tmp_root, getpid(), path);
+        
+        if (access(tmp_file, F_OK) != -1) {
+            // Remove temporary file and directory with mount PID if there is
+            // no other files in this dir and return 0 as a signal that dir has
+            // been created
+            
+            unlink(tmp_file);
+            rmdir(tmp_path);
+            
+            res = 0;
+        } else {
+            res = -ENOENT;
+        };
     };
-
     return res;
 };
 
@@ -104,7 +125,25 @@ struct fuse_file_info *fi) {
     (void) path;
     (void) m;
     (void) fi;
-
+    
+    // Max path length from
+    // http://serverfault.com/questions/9546/filename-length-limits-on-linux
+    char tmp_root[] = "/tmp/fuse-nul1fs";
+    char tmp_path[4096];
+    char tmp_file[4096];
+    
+    snprintf(tmp_path, sizeof tmp_path, "%s/%d", tmp_root, getpid());
+    snprintf(tmp_file, sizeof tmp_file, "%s/%d%s", tmp_root, getpid(), path);
+    
+    // Create directory for temporary file
+    mkdir(tmp_root, S_IRWXU | S_IRWXG | S_IRWXO);
+    mkdir(tmp_path, S_IRWXU | S_IRWXG | S_IRWXO);
+    
+    // Create temporary file
+    FILE *fp;
+    fp = fopen(tmp_file, "w");
+    fclose(fp);
+    
     return 0;
 };
 
