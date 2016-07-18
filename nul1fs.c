@@ -12,12 +12,20 @@
 #include <time.h>
 #include <fuse.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 time_t start_t;
+
+// Max path length from
+// http://serverfault.com/questions/9546/filename-length-limits-on-linux
+const unsigned int PATH_LENGTH = 4096;
+char tmp_root[] = "/tmp/fuse-nul1fs";
+unsigned int MYPID = -1;
 
 static int strendswith(const char *str, const char *sfx) {
     size_t sfx_len = strlen(sfx);
@@ -38,40 +46,44 @@ static int nullfs_getattr(const char *path, struct stat *stbuf) {
     if (! path) return -ENOENT;
 
     memset(stbuf, 0, sizeof(struct stat));
+
     if (nullfs_isdir(path)) {
         stbuf->st_mode = S_IFDIR | 0777;
         stbuf->st_nlink = 2;
         stbuf->st_atime = time(NULL);
         stbuf->st_mtime = start_t;
         stbuf->st_ctime = start_t;
+
         res = 0;
     } else {
-        stbuf->st_mode = S_IFREG | 0666;
-        stbuf->st_nlink = 1;
-        stbuf->st_size = 0;
-        stbuf->st_atime = time(NULL);
-        stbuf->st_mtime = time(NULL);
-        stbuf->st_ctime = time(NULL);
+        char tmp_obj[PATH_LENGTH];
+
+        snprintf(tmp_obj, sizeof tmp_obj, "%s/%d%s", tmp_root, MYPID, path);
         
-        char tmp_root[] = "/tmp/fuse-nul1fs";
-        char tmp_path[4096];
-        char tmp_file[4096];
-        
-        snprintf(tmp_path, sizeof tmp_path, "%s/%d", tmp_root, getpid());
-        snprintf(tmp_file, sizeof tmp_file, "%s/%d%s", tmp_root, getpid(), path);
-        
-        if (access(tmp_file, F_OK) != -1) {
-            // Remove temporary file and directory with mount PID if there is
-            // no other files in this dir and return 0 as a signal that dir has
-            // been created
+        struct stat sb;
+        if (stat(tmp_obj, &sb) == 0 && S_ISDIR(sb.st_mode)) {
+            stbuf->st_mode = S_IFDIR | 0777;
+            stbuf->st_nlink = 2;
+            stbuf->st_atime = time(NULL);
+            stbuf->st_mtime = start_t;
+            stbuf->st_ctime = start_t;
+
+            res = 0;
+        } else if (S_ISREG(sb.st_mode)) {
+            unlink(tmp_obj);
             
-            unlink(tmp_file);
-            rmdir(tmp_path);
+            stbuf->st_mode = S_IFREG | 0666;
+            stbuf->st_nlink = 1;
+            stbuf->st_size = 0;
+            stbuf->st_atime = time(NULL);
+            stbuf->st_mtime = time(NULL);
+            stbuf->st_ctime = time(NULL);
             
             res = 0;
         } else {
             res = -ENOENT;
-        };
+	};
+
     };
     return res;
 };
@@ -126,18 +138,9 @@ struct fuse_file_info *fi) {
     (void) m;
     (void) fi;
     
-    // Max path length from
-    // http://serverfault.com/questions/9546/filename-length-limits-on-linux
-    char tmp_root[] = "/tmp/fuse-nul1fs";
-    char tmp_path[4096];
-    char tmp_file[4096];
+    char tmp_file[PATH_LENGTH];
     
-    snprintf(tmp_path, sizeof tmp_path, "%s/%d", tmp_root, getpid());
-    snprintf(tmp_file, sizeof tmp_file, "%s/%d%s", tmp_root, getpid(), path);
-    
-    // Create directory for temporary file
-    mkdir(tmp_root, S_IRWXU | S_IRWXG | S_IRWXO);
-    mkdir(tmp_path, S_IRWXU | S_IRWXG | S_IRWXO);
+    snprintf(tmp_file, sizeof tmp_file, "%s/%d%s", tmp_root, MYPID, path);
     
     // Create temporary file
     FILE *fp;
@@ -146,6 +149,19 @@ struct fuse_file_info *fi) {
     
     return 0;
 };
+
+static int nullfs_mkdir(const char *path, mode_t mode)
+{
+    (void) path;
+    (void) mode;
+
+    char tmp_dir[PATH_LENGTH];
+
+    snprintf(tmp_dir, sizeof tmp_dir, "%s/%d%s", tmp_root, MYPID, path);
+
+    // Create directory for temporary file
+    return mkdir(tmp_dir, S_IRWXU | S_IRWXG | S_IRWXO);
+}
 
 static int nullfs_unlink(const char *path) {
     (void) path;
@@ -203,10 +219,24 @@ static struct fuse_operations nullfs_oper = {
     .chmod      = nullfs_chmod,
     .chown      = nullfs_chown,
     .utimens    = nullfs_utimens,
+    .mkdir      = nullfs_mkdir
 };
 
 int main(int argc, char *argv[]) {
     start_t = time(NULL);
+    MYPID = getpid();
+
+    char tmp_path[PATH_LENGTH];
+    char tmp_rm_path[PATH_LENGTH + 7];
+    snprintf(tmp_path, sizeof tmp_path, "%s/%d", tmp_root, MYPID);
+    snprintf(tmp_rm_path, sizeof tmp_rm_path, "rm -fr %s/%d", tmp_root, MYPID);
+
+    umask(0000);
+
+    mkdir(tmp_root, S_IRWXU | S_IRWXG | S_IRWXO);
+    system(tmp_rm_path);
+    mkdir(tmp_path, S_IRWXU | S_IRWXG | S_IRWXO);
+
     return fuse_main(argc, argv, &nullfs_oper, NULL);
 };
 
